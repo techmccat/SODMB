@@ -225,7 +225,7 @@ pub async fn stats(ctx: &Context, msg: &Message) -> CommandResult {
 // TODO: Handle playlists
 pub async fn add(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let query = args
-        .iter::<String>()
+        .iter()
         .map(|a| a.unwrap_or("".to_owned()))
         .collect::<Vec<String>>()
         .join(" ");
@@ -244,6 +244,51 @@ pub async fn add(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
                 .await,
             songbird::input::ytdl_search(&query).await,
         )
+    } {
+        (m, Ok(i)) => (i, m.unwrap()),
+        (_, Err(e)) => {
+            handle_message(
+                msg.channel_id
+                    .say(&ctx.http, format!("Error: {:?}", e))
+                    .await,
+            );
+            return Ok(());
+        }
+    };
+    
+    enqueue(ctx, msg, input).await.unwrap();
+    handle_message(query_msg.delete(&ctx.http).await);
+
+    Ok(())
+}
+
+#[command]
+#[aliases("r", "addraw", "add-raw", "ar")]
+#[only_in(guilds)]
+#[min_args(1)]
+#[description = "Add ffmpeg URI to the queue"]
+pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+    let query: String = args.single().unwrap();
+
+    let (input, query_msg) = match if {
+        query.starts_with("http") ||
+        query.starts_with("rtmp") ||
+        query.starts_with("ftp") ||
+        query.starts_with("hls") ||
+        query.starts_with("tcp") ||
+        query.starts_with("udp")
+    } {
+        (
+            msg.channel_id
+                .say(&ctx.http, format!("Adding {} to the queue", query))
+                .await,
+            songbird::ffmpeg(&query).await,
+        )
+    } else {
+            handle_message(msg.channel_id
+                .say(&ctx.http, format!("Invalid protocol"))
+                .await);
+            return Ok(())
     } {
         (m, Ok(i)) => (i, m.unwrap()),
         (_, Err(e)) => {

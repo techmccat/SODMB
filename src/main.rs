@@ -31,7 +31,7 @@ struct Handler {
 struct Misc;
 
 #[group]
-#[commands(add, pause, play, skip, clear, queue, pop, leave, join, np)]
+#[commands(add, raw, pause, play, skip, clear, queue, pop, leave, join, np)]
 struct Music;
 
 struct ShardManagerContainer;
