@@ -1,0 +1,20 @@
+[package]
+name = "musicbot_name_subject_to_change"
+version = "0.1.0"
+authors = ["techmccat <alessioa02004@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["macros", "signal", "rt-multi-thread"] }
+tokio-stream = "0.1"
+toml = "0.5"
+
+[dependencies.serenity]
+version = "0.10"
+features = ["client", "gateway", "rustls_backend", "model", "cache", "framework", "standard_framework", "voice"]
+
+[dependencies.songbird]
+version = "0.1"
+features = ["gateway", "serenity-rustls", "builtin-queue", "driver"]
