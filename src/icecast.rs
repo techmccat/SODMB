@@ -22,7 +22,7 @@ impl FromIceJson for Metadata {
 
         let uri: Uri = query.parse().unwrap();
         let mount = uri.path();
-        let obj = value.as_object();
+        let obj = value.as_object().and_then(|o| o.get("icestats"));
 
         let title = obj
             .and_then(|m| m.get("host"))
@@ -35,7 +35,7 @@ impl FromIceJson for Metadata {
             .map(str::to_owned);
 
         let source_val = {
-            let list = obj.and_then(|m| m.get("sources")).and_then(|v| match v {
+            let list = obj.and_then(|m| m.get("source")).and_then(|v| match v {
                 Value::Object(_) => Some(vec![v.to_owned()]),
                 Value::Array(a) => Some(a.to_owned()),
                 _ => None,
@@ -45,10 +45,14 @@ impl FromIceJson for Metadata {
 
             if let Some(l) = list {
                 for i in l {
-                    if i.get("listen_url")
-                        .and_then(|v| v.as_str())
-                        .and_then(|u| u.rsplitn(1, "/").next())
-                        == Some(mount)
+                    if i.get("listenurl")
+                        .and_then(|v| {
+                            v.as_str()
+                        })
+                        .and_then(|u| {
+                            u.rsplitn(2, "/").next()
+                        }).and_then(|m| Some("/".to_owned() + m))
+                        == Some(mount.to_owned())
                     {
                         found = Some(i);
                     }
@@ -62,6 +66,7 @@ impl FromIceJson for Metadata {
         };
         let source = source_val.as_object();
 
+        // TODO: Date is displayed with "/" in the middle for no reason
         let date = source
             .and_then(|m| m.get("stream_start"))
             .and_then(Value::as_str)
