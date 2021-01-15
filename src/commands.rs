@@ -49,10 +49,10 @@ fn handle_message<T>(res: SerenityResult<T>) {
 async fn cached_colour(ctx: &Context, guild: Option<Guild>) -> Colour {
     if let Some(g) = guild {
         if let Ok(me) = g.member(&ctx, ctx.cache.current_user_id().await).await {
-            return me.colour(&ctx.cache).await.unwrap_or(Colour::default());
+            return me.colour(&ctx.cache).await.unwrap_or(Colour(0xffffff));
         }
     };
-    Colour::default()
+    Colour(0xffffff)
 }
 
 async fn enqueue(ctx: &Context, msg: &Message, input: songbird::input::Input) -> Result<(), ()> {
@@ -330,7 +330,7 @@ pub async fn icecast(ctx: &Context, msg: &Message, mut args: Args) -> CommandRes
                 let uri: http::uri::Uri = query.parse().unwrap();
                 let stats = format!(
                     "{}://{}/status-json.xsl",
-                    uri.port().unwrap(),
+                    uri.scheme_str().unwrap(),
                     uri.authority().unwrap(),
                 );
                 let json: Value = reqwest::get(&stats).await?.json().await?;
