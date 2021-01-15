@@ -1,5 +1,6 @@
 use super::{CommandCounter, ShardManagerContainer};
 use futures::{prelude::stream, stream::StreamExt};
+use serde_json::Value;
 use serenity::{
     client::{bridge::gateway::ShardId, Context},
     framework::standard::{
@@ -17,7 +18,7 @@ use serenity::{
     utils::Colour,
     Result as SerenityResult,
 };
-use songbird::tracks;
+use songbird::{input::Metadata, tracks};
 use std::{collections::HashSet, time::Instant};
 
 struct TrackOwner;
@@ -88,7 +89,7 @@ async fn enqueue(ctx: &Context, msg: &Message, input: songbird::input::Input) ->
     let mut typemap = track_handle.typemap().write().await;
     typemap.insert::<TrackOwner>(msg.author.id);
     call.enqueue(track);
- 
+
     Ok(())
 }
 
@@ -255,7 +256,7 @@ pub async fn add(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
             return Ok(());
         }
     };
-    
+
     enqueue(ctx, msg, input).await.unwrap();
     handle_message(query_msg.delete(&ctx.http).await);
 
@@ -271,12 +272,12 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
     let query: String = args.single().unwrap();
 
     let (input, query_msg) = match if {
-        query.starts_with("http") ||
-        query.starts_with("rtmp") ||
-        query.starts_with("ftp") ||
-        query.starts_with("hls") ||
-        query.starts_with("tcp") ||
-        query.starts_with("udp")
+        query.starts_with("http")
+            || query.starts_with("rtmp")
+            || query.starts_with("ftp")
+            || query.starts_with("hls")
+            || query.starts_with("tcp")
+            || query.starts_with("udp")
     } {
         (
             msg.channel_id
@@ -285,10 +286,12 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
             songbird::ffmpeg(&query).await,
         )
     } else {
-            handle_message(msg.channel_id
+        handle_message(
+            msg.channel_id
                 .say(&ctx.http, format!("Invalid protocol"))
-                .await);
-            return Ok(())
+                .await,
+        );
+        return Ok(());
     } {
         (m, Ok(i)) => (i, m.unwrap()),
         (_, Err(e)) => {
@@ -300,7 +303,63 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
             return Ok(());
         }
     };
-    
+
+    enqueue(ctx, msg, input).await.unwrap();
+    handle_message(query_msg.delete(&ctx.http).await);
+
+    Ok(())
+}
+
+#[command]
+#[aliases("r", "addraw", "add-raw", "ar")]
+#[only_in(guilds)]
+#[min_args(1)]
+#[description = "Add icecast stream to the queue"]
+// TODO: Parse start time as SystemTime
+pub async fn icecast(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+    use crate::icecast::FromIceJson;
+
+    let query: String = args.single().unwrap();
+
+    let (input, query_msg) = match if query.starts_with("http") {
+        (
+            msg.channel_id
+                .say(&ctx.http, format!("Adding {} to the queue", query))
+                .await,
+            {
+                let uri: http::uri::Uri = query.parse().unwrap();
+                let stats = format!(
+                    "{}://{}/status-json.xsl",
+                    uri.port().unwrap(),
+                    uri.authority().unwrap(),
+                );
+                let json: Value = reqwest::get(&stats).await?.json().await?;
+                songbird::ffmpeg(&query).await
+                .and_then(|mut i| {
+                    i.metadata = Box::new(Metadata::from_ice_json(json, &query));
+                    Ok(i)
+                })
+            },
+        )
+    } else {
+        handle_message(
+            msg.channel_id
+                .say(&ctx.http, format!("Invalid protocol"))
+                .await,
+        );
+        return Ok(());
+    } {
+        (m, Ok(i)) => (i, m.unwrap()),
+        (_, Err(e)) => {
+            handle_message(
+                msg.channel_id
+                    .say(&ctx.http, format!("Error: {:?}", e))
+                    .await,
+            );
+            return Ok(());
+        }
+    };
+
     enqueue(ctx, msg, input).await.unwrap();
     handle_message(query_msg.delete(&ctx.http).await);
 
@@ -676,6 +735,8 @@ async fn np(ctx: &Context, msg: &Message) -> CommandResult {
             if let Some(s) = progress_bar {
                 out.push('\n');
                 out.push_str(&s);
+                out.push('\n');
+            } else {
                 out.push('\n');
             }
             out.push_str("Status: ");

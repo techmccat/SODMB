@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use toml;
 
 mod commands;
+mod icecast;
 
 #[derive(Deserialize)]
 struct Config {
@@ -31,7 +32,7 @@ struct Handler {
 struct Misc;
 
 #[group]
-#[commands(add, raw, pause, play, skip, clear, queue, pop, leave, join, np)]
+#[commands(add, raw, icecast, pause, play, skip, clear, queue, pop, leave, join, np)]
 struct Music;
 
 struct ShardManagerContainer;
@@ -81,16 +82,18 @@ async fn main() {
         .unwrap();
     {
         let mut data = client.data.write().await;
-        //data.insert::<Queues>(HashMap::default());
         data.insert::<CommandCounter>(HashMap::default());
         data.insert::<ShardManagerContainer>(Arc::clone(&client.shard_manager));
     }
+
     let shard_manager = client.shard_manager.clone();
+
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.expect("Could not get signal");
         println!("Shutting down shards");
         shard_manager.lock().await.shutdown_all().await;
     });
+
     client.start().await.unwrap()
 }
 
