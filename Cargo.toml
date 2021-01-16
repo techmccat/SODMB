@@ -1,5 +1,5 @@
 [package]
-name = "musicbot_name_subject_to_change"
+name = "botty10777"
 version = "0.1.0"
 authors = ["techmccat <alessioa02004@gmail.com>"]
 edition = "2018"
@@ -10,7 +10,7 @@ http = "0.2"
 reqwest = { version = "0.11", default_features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["macros", "signal", "rt-multi-thread"] }
+tokio = { version = "1.0", features = ["macros", "signal", "rt-multi-thread", "process"] }
 tokio-stream = "0.1"
 toml = "0.5"
 

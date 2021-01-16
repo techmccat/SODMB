@@ -3,11 +3,11 @@ use serde_json::Value;
 use songbird::input::Metadata;
 
 pub trait FromIceJson {
-    fn from_ice_json(value: Value, uri: &str) -> Metadata;
+    fn from_ice_json(value: Value, uri: &str) -> Self;
 }
 
 impl FromIceJson for Metadata {
-    fn from_ice_json(value: Value, query: &str) -> Metadata {
+    fn from_ice_json(value: Value, query: &str) -> Self {
         let emptymeta = Metadata {
             title: None,
             artist: None,

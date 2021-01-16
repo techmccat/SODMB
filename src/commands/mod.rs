@@ -1,137 +1,36 @@
 use super::{CommandCounter, ShardManagerContainer};
+use utils::*;
 use futures::{prelude::stream, stream::StreamExt};
 use serde_json::Value;
 use serenity::{
+    builder::CreateMessage,
     client::{bridge::gateway::ShardId, Context},
-    framework::standard::{
-        help_commands,
-        macros::{command, help, hook},
-        Args, CommandGroup, CommandResult, HelpOptions,
-    },
+    framework::standard::{macros::command, Args, CommandResult},
     model::{
         channel::Message,
         guild::{Guild, PartialMember},
-        id::UserId,
+        id::{GuildId, UserId},
         permissions::Permissions,
     },
     prelude::TypeMapKey,
     utils::Colour,
     Result as SerenityResult,
 };
-use songbird::{input::Metadata, tracks};
-use std::{collections::HashSet, time::Instant};
+use songbird::{
+    input::Metadata,
+    tracks::{self, TrackState},
+};
+use std::time::Instant;
+
+pub mod hooks;
+mod utils;
+
+pub use hooks::*;
 
 struct TrackOwner;
 
 impl TypeMapKey for TrackOwner {
     type Value = UserId;
-}
-
-async fn permission_check(ctx: &Context, mem: &PartialMember) -> bool {
-    for role in &mem.roles {
-        if role.to_role_cached(&ctx.cache).await.map_or(false, |r| {
-            r.has_permission(Permissions::MANAGE_CHANNELS) || r.name.to_lowercase() == "dj"
-        }) {
-            return true;
-        }
-    }
-    println!("Permission denied");
-    return false;
-}
-
-fn handle_message<T>(res: SerenityResult<T>) {
-    match res {
-        Ok(_) => (),
-        Err(e) => println!("Could not send/delete message: {}", e),
-    }
-}
-
-async fn cached_colour(ctx: &Context, guild: Option<Guild>) -> Colour {
-    if let Some(g) = guild {
-        if let Ok(me) = g.member(&ctx, ctx.cache.current_user_id().await).await {
-            return me.colour(&ctx.cache).await.unwrap_or(Colour(0xffffff));
-        }
-    };
-    Colour(0xffffff)
-}
-
-async fn enqueue(ctx: &Context, msg: &Message, input: songbird::input::Input) -> Result<(), ()> {
-    let guild = msg.guild(&ctx.cache).await.unwrap();
-    let guild_id = guild.id;
-    let channel_id = match guild
-        .voice_states
-        .get(&msg.author.id)
-        .and_then(|vs| vs.channel_id)
-    {
-        Some(id) => id,
-        None => {
-            handle_message(msg.reply(&ctx, "not in a voice channel").await);
-            return Ok(());
-        }
-    };
-
-    let manager = songbird::get(ctx).await.unwrap().clone();
-
-    if manager.get(guild_id).is_none() {
-        let (_, join_result) = manager.join(guild_id, channel_id).await;
-        if let Err(_) = join_result {
-            msg.channel_id
-                .say(&ctx, "Couldn't join voice channel")
-                .await
-                .unwrap();
-        }
-    }
-
-    let locked = manager.get(guild_id).unwrap();
-    let mut call = locked.lock().await;
-
-    let (track, track_handle) = tracks::create_player(input);
-    let mut typemap = track_handle.typemap().write().await;
-    typemap.insert::<TrackOwner>(msg.author.id);
-    call.enqueue(track);
-
-    Ok(())
-}
-
-#[hook]
-pub async fn before(ctx: &Context, _: &Message, command_name: &str) -> bool {
-    // Increment the number of times this command has been run once. If
-    // the command's name does not exist in the counter, add a default
-    // value of 0.
-    let mut data = ctx.data.write().await;
-    let counter = data
-        .get_mut::<CommandCounter>()
-        .expect("Expected CommandCounter in TypeMap.");
-    let entry = counter.entry(command_name.to_string()).or_insert(0);
-    *entry += 1;
-
-    true // if `before` returns false, command processing doesn't happen.
-}
-
-#[hook]
-pub async fn after(ctx: &Context, msg: &Message, _: &str, _: CommandResult) {
-    match msg.delete(&ctx.http).await {
-        Ok(_) => (),
-        Err(e) => println!("Cound not delete message: {}", e),
-    }
-}
-
-#[help]
-#[individual_command_tip = "For help on a specific command pass it as argument."]
-#[command_not_found_text = "{} not found."]
-#[lacking_permissions = "Hide"]
-#[lacking_role = "Hide"]
-#[wrong_channel = "Hide"]
-async fn help(
-    context: &Context,
-    msg: &Message,
-    args: Args,
-    help_options: &'static HelpOptions,
-    groups: &[&'static CommandGroup],
-    owners: HashSet<UserId>,
-) -> CommandResult {
-    let _ = help_commands::with_embeds(context, msg, args, help_options, groups, owners).await;
-    Ok(())
 }
 
 #[command]
@@ -311,7 +210,7 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
 }
 
 #[command]
-#[aliases("r", "addraw", "add-raw", "ar")]
+#[aliases("i", "ice", "ai", "add-icecast")]
 #[only_in(guilds)]
 #[min_args(1)]
 #[description = "Add icecast stream to the queue"]
@@ -334,8 +233,7 @@ pub async fn icecast(ctx: &Context, msg: &Message, mut args: Args) -> CommandRes
                     uri.authority().unwrap(),
                 );
                 let json: Value = reqwest::get(&stats).await?.json().await?;
-                songbird::ffmpeg(&query).await
-                .and_then(|mut i| {
+                songbird::ffmpeg(&query).await.and_then(|mut i| {
                     i.metadata = Box::new(Metadata::from_ice_json(json, &query));
                     Ok(i)
                 })
@@ -663,116 +561,13 @@ async fn np(ctx: &Context, msg: &Message) -> CommandResult {
             return Ok(());
         };
         let meta = current.metadata().clone();
-        let title = format!("Now playing: {}", meta.title.unwrap_or("".to_owned()));
-        let thumb = meta.thumbnail;
-        let owner = if let Ok(o) = {
+        let owner = {
             let read = current.typemap().read().await;
-            let user_id = read.get::<TrackOwner>().unwrap();
-            user_id.to_user(&ctx).await
-        } {
-            o.nick_in(&ctx, guild_id).await.unwrap_or(o.name)
-        } else {
-            "?".to_owned()
+            *read.get::<TrackOwner>().unwrap()
         };
-        let foot = format!("Requested by: {}", owner);
-
-        let mut fields = None;
-
-        {
-            let mut out = Vec::new();
-            let mut inline = true;
-            if let Some(a) = meta.artist {
-                out.push(("Artist/Channel", a, inline));
-                inline = !inline;
-            }
-            if let Some(a) = meta.date {
-                let mut d = a;
-                d.insert(6, '/');
-                d.insert(4, '/');
-                out.push(("Date", d, inline));
-            }
-            if out.len() != 0 {
-                fields = Some(out)
-            }
-        }
-
         let state = current.get_info().await.unwrap();
-
-        let progress_bar = {
-            if let Some(d) = meta.duration {
-                fn as_mins(s: u64) -> String {
-                    format!("{}:{}", s / 60, s % 60)
-                }
-                let p = state.position;
-                let d_int = d.as_secs();
-                let p_int = p.as_secs();
-                let ratio = (p_int as f32 / d_int as f32 * 30.0).round() as u8;
-                let mut bar = String::with_capacity(30);
-                for _ in 1..ratio {
-                    bar.push('=')
-                }
-                bar.push('>');
-                for _ in 0..30 - ratio {
-                    bar.push('-')
-                }
-                let mut out = String::new();
-                out.push_str(&format!(
-                    "`{}`  `{}`  `{}`",
-                    as_mins(p_int),
-                    bar,
-                    as_mins(d_int)
-                ));
-                Some(out)
-            } else {
-                None
-            }
-        };
-
-        let desc = {
-            use songbird::tracks::{LoopState, PlayMode};
-            let mut out = String::new();
-            out.push_str(&meta.source_url.unwrap_or("".to_owned()));
-            if let Some(s) = progress_bar {
-                out.push('\n');
-                out.push_str(&s);
-                out.push('\n');
-            } else {
-                out.push('\n');
-            }
-            out.push_str("Status: ");
-            out.push_str(match state.playing {
-                PlayMode::Play => "Playing",
-                PlayMode::Pause => "Paused",
-                PlayMode::Stop => "Stopped",
-                PlayMode::End => "Ended",
-                _ => "?",
-            });
-            if let LoopState::Finite(l) = state.loops {
-                if l != 0 {
-                    out.push_str(&format!("; {} loops left", l))
-                }
-            }
-            out
-        };
-
-        let colour = cached_colour(ctx, msg.guild(&ctx.cache).await).await;
-        msg.channel_id
-            .send_message(&ctx, |m| {
-                m.embed(|e| {
-                    if let Some(f) = fields {
-                        e.fields(f);
-                    }
-                    if let Some(t) = thumb {
-                        e.thumbnail(t);
-                    }
-                    e.title(title)
-                        .description(desc)
-                        .footer(|f| f.text(foot))
-                        .colour(colour)
-                })
-            })
-            .await
-            .unwrap();
+        let mut message = format_metadata(&ctx, guild_id, meta, owner, state).await;
+        handle_message(msg.channel_id.send_message(&ctx, |_| &mut message).await);
     } else {
         handle_message(msg.channel_id.say(&ctx, "Not in a voice channel").await);
     }
