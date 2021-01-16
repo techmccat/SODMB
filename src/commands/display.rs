@@ -78,11 +78,17 @@ pub async fn stats(ctx: &Context, msg: &Message) -> CommandResult {
                         format!("Gateway: {}\nREST API: {}", ws_latency, http_latency),
                         true,
                     ),
-                    ("Guilds", guild_count, true),
                     ("Top commands", top_commands, true),
                     ("Cache", cache_stats, false),
                 ])
-                .footer(|f| f.text(format!("Shard: {}/{}", ctx.shard_id + 1, shard_count)))
+                .footer(|f| {
+                    f.text(format!(
+                        "Shard: {}/{}, {} guilds",
+                        ctx.shard_id + 1,
+                        shard_count,
+                        guild_count
+                    ))
+                })
                 .colour(colour)
         })
     })

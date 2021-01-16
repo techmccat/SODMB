@@ -16,6 +16,13 @@ use songbird::{
     tracks::{self, TrackState},
 };
 
+pub fn handle_message<T>(res: SerenityResult<T>) {
+    match res {
+        Ok(_) => (),
+        Err(e) => println!("Could not send/delete message: {}", e),
+    }
+}
+
 pub async fn permission_check(ctx: &Context, mem: &PartialMember) -> bool {
     for role in &mem.roles {
         if role.to_role_cached(&ctx.cache).await.map_or(false, |r| {
@@ -26,13 +33,6 @@ pub async fn permission_check(ctx: &Context, mem: &PartialMember) -> bool {
     }
     println!("Permission denied");
     return false;
-}
-
-pub fn handle_message<T>(res: SerenityResult<T>) {
-    match res {
-        Ok(_) => (),
-        Err(e) => println!("Could not send/delete message: {}", e),
-    }
 }
 
 pub async fn format_metadata<'a>(
@@ -55,16 +55,14 @@ pub async fn format_metadata<'a>(
 
     {
         let mut out = Vec::new();
-        let mut inline = true;
         if let Some(a) = meta.artist {
-            out.push(("Artist/Channel", a, inline));
-            inline = !inline;
+            out.push(("Artist/Channel", a, true));
         }
         if let Some(a) = meta.date {
             let mut d = a;
             d.insert(6, '/');
             d.insert(4, '/');
-            out.push(("Date", d, inline));
+            out.push(("Date", d, true));
         }
         if out.len() != 0 {
             fields = Some(out)
