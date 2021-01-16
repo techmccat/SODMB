@@ -1,17 +1,13 @@
 use super::TrackOwner;
-use futures::{prelude::stream, stream::StreamExt};
-use serde_json::Value;
 use serenity::{
     builder::CreateMessage,
-    client::{bridge::gateway::ShardId, Context},
-    framework::standard::{macros::command, Args, CommandResult},
+    client::Context,
     model::{
         channel::Message,
         guild::{Guild, PartialMember},
         id::{GuildId, UserId},
         permissions::Permissions,
     },
-    prelude::TypeMapKey,
     utils::Colour,
     Result as SerenityResult,
 };
@@ -19,7 +15,6 @@ use songbird::{
     input::Metadata,
     tracks::{self, TrackState},
 };
-use std::time::Instant;
 
 pub async fn permission_check(ctx: &Context, mem: &PartialMember) -> bool {
     for role in &mem.roles {
