@@ -4,9 +4,7 @@ use serenity::{
     async_trait,
     client::{bridge::gateway::ShardManager, Client, Context, EventHandler},
     framework::{standard::macros::group, StandardFramework},
-    model::{
-        gateway::{Activity, Ready},
-    },
+    model::gateway::{Activity, Ready},
     prelude::TypeMapKey,
 };
 use songbird::SerenityInit;
@@ -14,6 +12,7 @@ use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use toml;
 
+mod audiocache;
 mod commands;
 mod icecast;
 
@@ -32,10 +31,13 @@ struct Handler {
 struct Misc;
 
 #[group]
-#[commands(add, raw, icecast, pause, play, skip, clear, queue, pop, leave, join, np)]
+#[commands(
+    add, raw, icecast, pause, play, skip, clear, queue, pop, leave, join, np
+)]
 struct Music;
 
 struct ShardManagerContainer;
+
 struct CommandCounter;
 
 #[derive(Clone)]
@@ -51,6 +53,11 @@ impl TypeMapKey for ShardManagerContainer {
 
 impl TypeMapKey for CommandCounter {
     type Value = HashMap<String, u64>;
+}
+
+use audiocache::TrackCache;
+impl TypeMapKey for TrackCache {
+    type Value = Arc<Mutex<TrackCache>>;
 }
 
 #[async_trait]
@@ -83,6 +90,7 @@ async fn main() {
     {
         let mut data = client.data.write().await;
         data.insert::<CommandCounter>(HashMap::default());
+        data.insert::<TrackCache>(Arc::new(Mutex::new(TrackCache::new())));
         data.insert::<ShardManagerContainer>(Arc::clone(&client.shard_manager));
     }
 
