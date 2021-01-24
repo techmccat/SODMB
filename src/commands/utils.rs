@@ -172,6 +172,7 @@ pub async fn enqueue(
         }
     };
 
+<<<<<<< HEAD
     let manager = songbird::get(ctx).await.unwrap().clone();
 
     if manager.get(guild_id).is_none() {
@@ -181,6 +182,86 @@ pub async fn enqueue(
                 .say(&ctx, "Couldn't join voice channel")
                 .await
                 .unwrap();
+=======
+    let meta = input.metadata.clone();
+    let mut comp = None;
+    // let comp = None;
+
+    // TODO: what the hell are those artifacts
+    if let Some(url) = meta.source_url {
+        let input = if let Some(p) = cache.lock().await.0.get(&url) {
+            println!("Cache hit for {}", url);
+
+            let file = format!("audio_cache/{}", p);
+            let mut input = dca(&file).await.unwrap();
+
+            let extra_meta = {
+                // println!("Trying to open {}", &file);
+                let mut reader = File::open(&file).await.expect("Failed to open file");
+                let mut header = [0u8; 4];
+                reader.read_exact(&mut header).await.unwrap();
+                if header != b"DCA1"[..] {
+                    panic!("Invalid file")
+                }
+                let size = reader.read_i32_le().await.unwrap();
+                if size < 2 {
+                    panic!("Invalid metadata size")
+                };
+                let mut json = Vec::with_capacity(size as usize);
+                let mut json_reader = reader.take(size as u64);
+                json_reader.read_to_end(&mut json).await.unwrap();
+                let value = serde_json::from_slice(&json).unwrap();
+                audiocache::extra_meta(&value)
+            };
+            {
+                input.metadata = Box::new(Metadata {
+                    date: extra_meta.date,
+                    duration: extra_meta.duration,
+                    thumbnail: extra_meta.thumbnail,
+                    ..*input.metadata
+                })
+            }
+            input
+        } else if let Some(d) = meta.duration {
+            // TODO: Add config entry to limit lenght
+            if d <= Duration::from_secs(1200) {
+                match Compressed::new(input, Bitrate::BitsPerSecond(BITRATE as i32)) {
+                    Ok(compressed) => {
+                        comp = Some(compressed.new_handle());
+                        // Load the whole thing into RAM.
+                        // I had some problems when not doing this (see commit 7415cf in master)
+                        // TODO: Spawn loader when playing starts, not when adding to queue
+                        let _ = compressed.raw.spawn_loader();
+                        compressed.into()
+                    }
+                    Err(e) => {
+                        handle_message(
+                            msg.channel_id
+                                .say(&ctx.http, format!("Error: {:?}", e))
+                                .await,
+                        );
+                        return Ok(());
+                    }
+                }
+            } else {
+                input
+            }
+        } else {
+            input
+        };
+
+        let manager = songbird::get(ctx).await.unwrap().clone();
+
+        if manager.get(guild_id).is_none() {
+            let (_, join_result) = manager.join(guild_id, channel_id).await;
+            if let Err(_) = join_result {
+                handle_message(
+                    msg.channel_id
+                        .say(&ctx, "Couldn't join voice channel")
+                        .await,
+                );
+            }
+>>>>>>> comp_fix
         }
     }
 
