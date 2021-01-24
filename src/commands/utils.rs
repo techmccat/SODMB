@@ -184,7 +184,9 @@ pub async fn enqueue(
 
     let meta = input.metadata.clone();
     let mut comp = None;
+    // let comp = None;
 
+    // TODO: what the hell are those artifacts
     if let Some(url) = meta.source_url {
         let input = if let Some(p) = cache.lock().await.0.get(&url) {
             println!("Cache hit for {}", url);
