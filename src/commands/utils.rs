@@ -190,14 +190,10 @@ pub async fn enqueue(
     if let Some(url) = meta.source_url {
         let input = if let Some(p) = cache.lock().await.0.get(&url) {
             println!("Cache hit for {}", url);
+
             let file = format!("audio_cache/{}", p);
-            //{
-            //    let mut buf = Vec::new();
-            //    let mut mem = Memory::new(dca(&file).await.unwrap()).unwrap();
-            //    mem.raw.read_to_end(&mut buf).unwrap();
-            //    fs::write("audio_cache/dump.s16le", buf).await.unwrap()
-            //};
             let mut input = dca(&file).await.unwrap();
+
             let extra_meta = {
                 // println!("Trying to open {}", &file);
                 let mut reader = File::open(&file).await.expect("Failed to open file");
@@ -231,6 +227,10 @@ pub async fn enqueue(
                 match Compressed::new(input, Bitrate::BitsPerSecond(BITRATE as i32)) {
                     Ok(compressed) => {
                         comp = Some(compressed.new_handle());
+                        // Load the whole thing into RAM.
+                        // I had some problems when not doing this (see commit 7415cf in master)
+                        // TODO: Spawn loader when playing starts, not when adding to queue
+                        let _ = compressed.raw.spawn_loader();
                         compressed.into()
                     }
                     Err(e) => {
