@@ -1,5 +1,4 @@
 use super::TrackOwner;
-use crate::audiocache::{self, TrackCache, TrackEndEvent, BITRATE};
 use serenity::{
     builder::CreateMessage,
     client::Context,
@@ -13,12 +12,9 @@ use serenity::{
     Result as SerenityResult,
 };
 use songbird::{
-    input::{cached::Compressed, dca, Metadata},
+    input::Metadata,
     tracks::{self, TrackState},
-    Bitrate, Event, TrackEvent,
 };
-use std::time::Duration;
-use tokio::{fs::File, io::AsyncReadExt};
 
 pub fn handle_message<T>(res: SerenityResult<T>) {
     match res {
@@ -37,15 +33,6 @@ pub async fn permission_check(ctx: &Context, mem: &PartialMember) -> bool {
     }
     println!("Permission denied");
     return false;
-}
-
-pub async fn cached_colour(ctx: &Context, guild: Option<Guild>) -> Colour {
-    if let Some(g) = guild {
-        if let Ok(me) = g.member(&ctx, ctx.cache.current_user_id().await).await {
-            return me.colour(&ctx.cache).await.unwrap_or(Colour(0xffffff));
-        }
-    };
-    Colour(0xffffff)
 }
 
 pub async fn format_metadata<'a>(
@@ -157,19 +144,22 @@ pub async fn format_metadata<'a>(
     message
 }
 
+pub async fn cached_colour(ctx: &Context, guild: Option<Guild>) -> Colour {
+    if let Some(g) = guild {
+        if let Ok(me) = g.member(&ctx, ctx.cache.current_user_id().await).await {
+            return me.colour(&ctx.cache).await.unwrap_or(Colour(0xffffff));
+        }
+    };
+    Colour(0xffffff)
+}
+
 pub async fn enqueue(
     ctx: &Context,
     msg: &Message,
     input: songbird::input::Input,
 ) -> Result<(), ()> {
-    let cache = {
-        let read = ctx.data.read().await;
-        read.get::<TrackCache>().unwrap().clone()
-    };
-
     let guild = msg.guild(&ctx.cache).await.unwrap();
     let guild_id = guild.id;
-
     let channel_id = match guild
         .voice_states
         .get(&msg.author.id)
@@ -182,100 +172,25 @@ pub async fn enqueue(
         }
     };
 
-    let meta = input.metadata.clone();
-    let mut comp = None;
+    let manager = songbird::get(ctx).await.unwrap().clone();
 
-    if let Some(url) = meta.source_url {
-        let input = if let Some(p) = cache.lock().await.0.get(&url) {
-            println!("Cache hit for {}", url);
-            let file = format!("audio_cache/{}", p);
-            //{
-            //    let mut buf = Vec::new();
-            //    let mut mem = Memory::new(dca(&file).await.unwrap()).unwrap();
-            //    mem.raw.read_to_end(&mut buf).unwrap();
-            //    fs::write("audio_cache/dump.s16le", buf).await.unwrap()
-            //};
-            let mut input = dca(&file).await.unwrap();
-            let extra_meta = {
-                // println!("Trying to open {}", &file);
-                let mut reader = File::open(&file).await.expect("Failed to open file");
-                let mut header = [0u8; 4];
-                reader.read_exact(&mut header).await.unwrap();
-                if header != b"DCA1"[..] {
-                    panic!("Invalid file")
-                }
-                let size = reader.read_i32_le().await.unwrap();
-                if size < 2 {
-                    panic!("Invalid metadata size")
-                };
-                let mut json = Vec::with_capacity(size as usize);
-                let mut json_reader = reader.take(size as u64);
-                json_reader.read_to_end(&mut json).await.unwrap();
-                let value = serde_json::from_slice(&json).unwrap();
-                audiocache::extra_meta(&value)
-            };
-            {
-                input.metadata = Box::new(Metadata {
-                    date: extra_meta.date,
-                    duration: extra_meta.duration,
-                    thumbnail: extra_meta.thumbnail,
-                    ..*input.metadata
-                })
-            }
-            input
-        } else if let Some(d) = meta.duration {
-            // TODO: Add config entry to limit lenght
-            if d <= Duration::from_secs(1200) {
-                match Compressed::new(input, Bitrate::BitsPerSecond(BITRATE as i32)) {
-                    Ok(compressed) => {
-                        comp = Some(compressed.new_handle());
-                        compressed.into()
-                    }
-                    Err(e) => {
-                        handle_message(
-                            msg.channel_id
-                                .say(&ctx.http, format!("Error: {:?}", e))
-                                .await,
-                        );
-                        return Ok(());
-                    }
-                }
-            } else {
-                input
-            }
-        } else {
-            input
-        };
-
-        let manager = songbird::get(ctx).await.unwrap().clone();
-
-        if manager.get(guild_id).is_none() {
-            let (_, join_result) = manager.join(guild_id, channel_id).await;
-            if let Err(_) = join_result {
-                handle_message(
-                    msg.channel_id
-                        .say(&ctx, "Couldn't join voice channel")
-                        .await,
-                );
-            }
+    if manager.get(guild_id).is_none() {
+        let (_, join_result) = manager.join(guild_id, channel_id).await;
+        if let Err(_) = join_result {
+            msg.channel_id
+                .say(&ctx, "Couldn't join voice channel")
+                .await
+                .unwrap();
         }
-
-        let locked = manager.get(guild_id).unwrap();
-        let mut call = locked.lock().await;
-
-        let (track, track_handle) = tracks::create_player(input);
-        let mut typemap = track_handle.typemap().write().await;
-        typemap.insert::<TrackOwner>(msg.author.id);
-        if let Some(c) = comp {
-            let _ = track_handle.add_event(
-                Event::Track(TrackEvent::End),
-                TrackEndEvent {
-                    cache: cache.clone(),
-                    compressed: c,
-                },
-            );
-        };
-        call.enqueue(track);
     }
+
+    let locked = manager.get(guild_id).unwrap();
+    let mut call = locked.lock().await;
+
+    let (track, track_handle) = tracks::create_player(input);
+    let mut typemap = track_handle.typemap().write().await;
+    typemap.insert::<TrackOwner>(msg.author.id);
+    call.enqueue(track);
+
     Ok(())
 }
