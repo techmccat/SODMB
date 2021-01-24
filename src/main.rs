@@ -14,6 +14,7 @@ use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use toml;
 
+mod audiocache;
 mod commands;
 mod icecast;
 
@@ -53,6 +54,11 @@ impl TypeMapKey for CommandCounter {
     type Value = HashMap<String, u64>;
 }
 
+use audiocache::TrackCache;
+impl TypeMapKey for TrackCache {
+    type Value = Arc<Mutex<TrackCache>>;
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -83,6 +89,7 @@ async fn main() {
     {
         let mut data = client.data.write().await;
         data.insert::<CommandCounter>(HashMap::default());
+        data.insert::<TrackCache>(Arc::new(Mutex::new(TrackCache::new())));
         data.insert::<ShardManagerContainer>(Arc::clone(&client.shard_manager));
     }
 

@@ -1,4 +1,5 @@
 use super::TrackOwner;
+use crate::audiocache::{self, TrackCache, TrackEndEvent, BITRATE};
 use serenity::{
     builder::CreateMessage,
     client::Context,
@@ -12,9 +13,12 @@ use serenity::{
     Result as SerenityResult,
 };
 use songbird::{
-    input::Metadata,
+    input::{cached::Compressed, dca, Metadata},
     tracks::{self, TrackState},
+    Bitrate, Event, TrackEvent,
 };
+use std::time::Duration;
+use tokio::{fs::File, io::AsyncReadExt};
 
 pub fn handle_message<T>(res: SerenityResult<T>) {
     match res {
@@ -158,6 +162,10 @@ pub async fn enqueue(
     msg: &Message,
     input: songbird::input::Input,
 ) -> Result<(), ()> {
+    let cache = {
+        let read = ctx.data.read().await;
+        read.get::<TrackCache>().unwrap().clone()
+    };
     let guild = msg.guild(&ctx.cache).await.unwrap();
     let guild_id = guild.id;
     let channel_id = match guild
@@ -172,7 +180,6 @@ pub async fn enqueue(
         }
     };
 
-<<<<<<< HEAD
     let manager = songbird::get(ctx).await.unwrap().clone();
 
     if manager.get(guild_id).is_none() {
@@ -182,7 +189,8 @@ pub async fn enqueue(
                 .say(&ctx, "Couldn't join voice channel")
                 .await
                 .unwrap();
-=======
+        }
+    }
     let meta = input.metadata.clone();
     let mut comp = None;
     // let comp = None;
@@ -261,17 +269,27 @@ pub async fn enqueue(
                         .await,
                 );
             }
->>>>>>> comp_fix
         }
+
+        let locked = manager.get(guild_id).unwrap();
+        let mut call = locked.lock().await;
+
+        let (track, track_handle) = tracks::create_player(input);
+
+        let mut typemap = track_handle.typemap().write().await;
+        typemap.insert::<TrackOwner>(msg.author.id);
+
+        if let Some(c) = comp {
+            let _ = track_handle.add_event(
+                Event::Track(TrackEvent::End),
+                TrackEndEvent {
+                    cache: cache.clone(),
+                    compressed: c,
+                },
+            );
+        };
+
+        call.enqueue(track);
     }
-
-    let locked = manager.get(guild_id).unwrap();
-    let mut call = locked.lock().await;
-
-    let (track, track_handle) = tracks::create_player(input);
-    let mut typemap = track_handle.typemap().write().await;
-    typemap.insert::<TrackOwner>(msg.author.id);
-    call.enqueue(track);
-
     Ok(())
 }
