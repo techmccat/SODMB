@@ -14,5 +14,5 @@ Put token and prefix in a the config.toml file, build it and run it.
 - Audio cache
     - Use a proper DB as cold storage, not JSON
 - Add tracing
-- Clean up some code (unwrap everywhere)
+- Organize the new stuff (current modules are a mess)
 - Icecast song metadata (a bitch to parse, can't everyone just use lowercase?)
