@@ -46,13 +46,7 @@ pub async fn add(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
         }
     };
 
-    if let Err(e) = enqueue(ctx, msg, input).await {
-        handle_message(
-            msg.channel_id
-                .say(&ctx.http, format!("Error: {:?}", e))
-                .await,
-        );
-    }
+    enqueue(ctx, msg, input).await;
     handle_message(query_msg.delete(&ctx.http).await);
 
     Ok(())
@@ -99,13 +93,7 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
         }
     };
 
-    if let Err(e) = enqueue(ctx, msg, input).await {
-        handle_message(
-            msg.channel_id
-                .say(&ctx.http, format!("Error: {:?}", e))
-                .await,
-        );
-    }
+    enqueue(ctx, msg, input).await;
     handle_message(query_msg.delete(&ctx.http).await);
 
     Ok(())
@@ -160,13 +148,7 @@ pub async fn icecast(ctx: &Context, msg: &Message, mut args: Args) -> CommandRes
         }
     };
 
-    if let Err(e) = enqueue(ctx, msg, input).await {
-        handle_message(
-            msg.channel_id
-                .say(&ctx.http, format!("Error: {:?}", e))
-                .await,
-        );
-    }
+    enqueue(ctx, msg, input).await;
     handle_message(query_msg.delete(&ctx.http).await);
 
     Ok(())

@@ -1,5 +1,5 @@
-use super::TrackOwner;
-use crate::audiocache::{self, TrackCache, TrackEndEvent, BITRATE};
+use super::{TrackOwner, CompHandle};
+use crate::audiocache::{self, TrackCache, TrackEndEvent, TrackStartEvent, BITRATE};
 use serenity::{
     builder::CreateMessage,
     client::Context,
@@ -55,7 +55,7 @@ pub async fn format_metadata<'a>(
     author_id: UserId,
     state: Box<TrackState>,
 ) -> CreateMessage<'a> {
-    let title = format!("Now playing: {}", meta.title.unwrap_or("".to_owned()));
+    let title = format!("Now playing: {}", meta.title.unwrap_or_default());
     let thumb = meta.thumbnail;
     let owner = if let Ok(o) = { author_id.to_user(&ctx).await } {
         o.nick_in(&ctx, gid).await.unwrap_or(o.name)
@@ -166,11 +166,7 @@ pub async fn cached_colour(ctx: &Context, guild: Option<Guild>) -> Colour {
     Colour(0xffffff)
 }
 
-pub async fn enqueue(
-    ctx: &Context,
-    msg: &Message,
-    input: songbird::input::Input,
-) -> Result<(), ()> {
+pub async fn enqueue(ctx: &Context, msg: &Message, input: songbird::input::Input) {
     let cache = {
         let read = ctx.data.read().await;
         read.get::<TrackCache>().unwrap().clone()
@@ -185,25 +181,32 @@ pub async fn enqueue(
         Some(id) => id,
         None => {
             handle_message(msg.reply(&ctx, "not in a voice channel").await);
-            return Ok(());
+            return;
         }
     };
 
     let manager = songbird::get(ctx).await.unwrap().clone();
 
-    if manager.get(guild_id).is_none() {
-        let (_, join_result) = manager.join(guild_id, channel_id).await;
+    let locked = if let Some(lock) = manager.get(guild_id) {
+        lock
+    } else {
+        let (call, join_result) = manager.join(guild_id, channel_id).await;
         if let Err(_) = join_result {
-            handle_message(msg.channel_id
-                .say(&ctx, "Couldn't join voice channel")
-                .await);
+            handle_message(
+                msg.channel_id
+                    .say(&ctx, "Couldn't join voice channel")
+                    .await,
+            );
+            return;
+        } else {
+            call
         }
-    }
+    };
+    let mut call = locked.lock().await;
+
     let meta = input.metadata.clone();
     let mut comp = None;
-    // let comp = None;
 
-    // TODO: what the hell are those artifacts
     if let Some(url) = meta.source_url {
         let input = if let Some(p) = cache.lock().await.0.get(&url) {
             println!("Cache hit for {}", url);
@@ -248,7 +251,9 @@ pub async fn enqueue(
                         // Load the whole thing into RAM.
                         // I had some problems when not doing this (see commit 7415cf in master)
                         // TODO: Spawn loader when playing starts, not when adding to queue
-                        let _ = compressed.raw.spawn_loader();
+                        if call.queue().len() == 0 {
+                            let _ = compressed.raw.spawn_loader();
+                        }
                         compressed.into()
                     }
                     Err(e) => {
@@ -257,7 +262,7 @@ pub async fn enqueue(
                                 .say(&ctx.http, format!("Error: {:?}", e))
                                 .await,
                         );
-                        return Ok(());
+                        return;
                     }
                 }
             } else {
@@ -280,9 +285,6 @@ pub async fn enqueue(
             }
         }
 
-        let locked = manager.get(guild_id).unwrap();
-        let mut call = locked.lock().await;
-
         let (track, track_handle) = tracks::create_player(input);
 
         let mut typemap = track_handle.typemap().write().await;
@@ -293,12 +295,14 @@ pub async fn enqueue(
                 Event::Track(TrackEvent::End),
                 TrackEndEvent {
                     cache: cache.clone(),
-                    compressed: c,
+                    compressed: c.clone(),
                 },
             );
+
+            typemap.insert::<CompHandle>(c);
+            let _ = track_handle.add_event(Event::Track(TrackEvent::End), TrackStartEvent);
         };
 
         call.enqueue(track);
     }
-    Ok(())
 }

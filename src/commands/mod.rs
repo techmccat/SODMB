@@ -19,10 +19,16 @@ pub use hooks::*;
 pub use queue::*;
 
 struct TrackOwner;
+pub struct CompHandle;
 
 impl TypeMapKey for TrackOwner {
     type Value = UserId;
 }
+
+impl TypeMapKey for CompHandle {
+    type Value = songbird::input::cached::Compressed;
+}
+
 #[command]
 #[aliases("l")]
 #[only_in(guilds)]
