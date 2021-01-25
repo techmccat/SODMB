@@ -20,10 +20,19 @@ use songbird::{
 use std::time::Duration;
 use tokio::{fs::File, io::AsyncReadExt};
 
+// TODO: tracing
 pub fn handle_message<T>(res: SerenityResult<T>) {
     match res {
         Ok(_) => (),
         Err(e) => println!("Could not send/delete message: {}", e),
+    }
+}
+
+//TODO: tracing
+pub fn handle_io<T>(res: std::io::Result<T>) -> T {
+    match res {
+        Ok(t) => t,
+        Err(e) => panic!("I/O error: {}", e),
     }
 }
 
@@ -185,10 +194,9 @@ pub async fn enqueue(
     if manager.get(guild_id).is_none() {
         let (_, join_result) = manager.join(guild_id, channel_id).await;
         if let Err(_) = join_result {
-            msg.channel_id
+            handle_message(msg.channel_id
                 .say(&ctx, "Couldn't join voice channel")
-                .await
-                .unwrap();
+                .await);
         }
     }
     let meta = input.metadata.clone();
@@ -204,21 +212,22 @@ pub async fn enqueue(
             let mut input = dca(&file).await.unwrap();
 
             let extra_meta = {
-                // println!("Trying to open {}", &file);
-                let mut reader = File::open(&file).await.expect("Failed to open file");
+                let mut reader = handle_io(File::open(&file).await);
                 let mut header = [0u8; 4];
-                reader.read_exact(&mut header).await.unwrap();
+
+                handle_io(reader.read_exact(&mut header).await);
+
                 if header != b"DCA1"[..] {
                     panic!("Invalid file")
                 }
-                let size = reader.read_i32_le().await.unwrap();
+                let size = handle_io(reader.read_i32_le().await);
                 if size < 2 {
                     panic!("Invalid metadata size")
                 };
                 let mut json = Vec::with_capacity(size as usize);
                 let mut json_reader = reader.take(size as u64);
-                json_reader.read_to_end(&mut json).await.unwrap();
-                let value = serde_json::from_slice(&json).unwrap();
+                handle_io(json_reader.read_to_end(&mut json).await);
+                let value = serde_json::from_slice(&json).unwrap_or_default();
                 audiocache::extra_meta(&value)
             };
             {

@@ -69,8 +69,9 @@ impl EventHandler for Handler {
 }
 
 #[tokio::main]
-async fn main() {
-    let config = read_config();
+async fn main() -> Result<(), Box<dyn std::error::Error>>{
+    let config = read_config()?;
+
     let framework = StandardFramework::new()
         .configure(|c| c.prefix(&config.prefix))
         .group(&MUSIC_GROUP)
@@ -95,25 +96,25 @@ async fn main() {
 
     let shard_manager = client.shard_manager.clone();
 
+    // TODO: Handle SIGINT this way too
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.expect("Could not get signal");
         println!("Shutting down shards");
         shard_manager.lock().await.shutdown_all().await;
     });
 
-    client.start().await.unwrap()
+    client.start().await?;
+    Ok(())
 }
 
-fn read_config() -> Config {
-    toml::from_str({
+fn read_config() -> Result<Config, Box<dyn std::error::Error>> {
+    Ok(toml::from_str({
         &fs::read_to_string(
-            env::current_exe()
-                .unwrap()
+            env::current_exe()?
                 .parent()
                 .unwrap()
                 .join("config.toml"),
         )
-        .unwrap_or(fs::read_to_string(env::current_dir().unwrap().join("config.toml")).unwrap())
-    })
-    .unwrap()
+        .unwrap_or(fs::read_to_string(env::current_dir()?.join("config.toml"))?)
+    })?)
 }

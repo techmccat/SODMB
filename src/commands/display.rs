@@ -138,12 +138,13 @@ pub async fn queue(ctx: &Context, msg: &Message) -> CommandResult {
             out.join("\n")
         };
         let colour = cached_colour(ctx, msg.guild(&ctx.cache).await).await;
-        msg.channel_id
-            .send_message(&ctx, |m| {
-                m.embed(|e| e.title("Queue").description(text).colour(colour))
-            })
-            .await
-            .unwrap();
+        handle_message(
+            msg.channel_id
+                .send_message(&ctx, |m| {
+                    m.embed(|e| e.title("Queue").description(text).colour(colour))
+                })
+                .await,
+        );
     } else {
         handle_message(msg.channel_id.say(&ctx, "Not in a voice channel").await);
     }

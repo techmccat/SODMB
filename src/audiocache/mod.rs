@@ -1,3 +1,4 @@
+use crate::commands::utils::handle_io;
 use http::Uri;
 use serde_json::Value;
 use serenity::async_trait;
@@ -22,20 +23,21 @@ pub struct TrackEndEvent {
 
 impl TrackCache {
     pub fn new() -> Self {
-        let buf = fs::read_to_string("audio_cache/cold.json").unwrap_or("{}".to_owned());
+        let buf = fs::read_to_string("audio_cache/cold.json").unwrap_or_default();
         Self {
-            0: serde_json::from_str(&buf).unwrap(),
+            0: serde_json::from_str(&buf).unwrap_or_default(),
         }
     }
 }
 
+// TODO: Flush this once in a while
 impl Drop for TrackCache {
     fn drop(&mut self) {
         let cold = "audio_cache/cold.json";
         if !Path::new("audio_cache").exists() {
-            fs::create_dir("audio_cache").unwrap();
+            handle_io(fs::create_dir("audio_cache"));
         };
-        fs::write(cold, &serde_json::to_string(&self.0).unwrap().into_bytes()).unwrap();
+        handle_io(fs::write(cold, &serde_json::to_string(&self.0).unwrap().into_bytes()));
     }
 }
 
@@ -62,8 +64,9 @@ impl EventHandler for TrackEndEvent {
                     let time = d.as_secs();
                     let len = (time + 1) * BITRATE / 8;
                     // saves file as audio_cache/host/query
+                    let sauce = meta.source_url.clone().unwrap();
                     let (query, host) = {
-                        let uri = meta.source_url.clone().unwrap().parse::<Uri>().unwrap();
+                        let uri = sauce.parse::<Uri>().unwrap();
                         (
                             uri.query().unwrap().to_owned(),
                             uri.host().unwrap().to_owned(),
@@ -77,7 +80,7 @@ impl EventHandler for TrackEndEvent {
                         // println!("Preallocating {} bytes", len);
                         let mut buf = Vec::with_capacity(len as usize);
                         // println!("Read {} bytes",
-                        comp_send.read_to_end(&mut buf).unwrap();
+                        handle_io(comp_send.read_to_end(&mut buf));
                         buf
                     })
                     .await
@@ -86,20 +89,21 @@ impl EventHandler for TrackEndEvent {
                     {
                         let path = format!("audio_cache/{}", host);
                         if !Path::new(&path).exists() {
-                            fs::create_dir_all(&path).unwrap();
+                            handle_io(fs::create_dir_all(&path));
                         };
                         let path = format!("{}/{}", path, query);
-                        let mut file = File::create(&path).await.unwrap();
-                        println!("Writing to {}", path);
-                        println!(
-                            "Header: {} bytes",
-                            file.write(&dcameta.header()).await.unwrap()
-                        );
-                        file.write_all(&dca).await.unwrap();
+                        let mut file = handle_io(File::create(&path).await);
+                        // TODO: tracing
+                        // println!("Writing to {}", path);
+                        // println!(
+                        //    "Header: {} bytes",
+                        handle_io(file.write(&dcameta.header()).await);
+                        //);
+                        handle_io(file.write_all(&dca).await);
                     }
                     let mut lock = self.cache.lock().await;
                     lock.0.insert(
-                        meta.clone().source_url.unwrap(),
+                        sauce,
                         format!("{}/{}", host, query),
                     );
                 }

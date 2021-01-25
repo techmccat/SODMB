@@ -11,7 +11,7 @@ pub mod add;
 pub mod display;
 pub mod hooks;
 pub mod queue;
-mod utils;
+pub mod utils;
 
 pub use add::*;
 pub use display::*;

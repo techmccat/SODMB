@@ -58,8 +58,8 @@ impl FromIceJson for Metadata {
                     }
                 }
             }
-            if let Some(_) = found {
-                found.unwrap()
+            if let Some(source) = found {
+                source
             } else {
                 return emptymeta;
             }
