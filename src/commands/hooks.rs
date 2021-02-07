@@ -9,6 +9,7 @@ use serenity::{
     model::{channel::Message, id::UserId},
 };
 use std::collections::HashSet;
+use tracing::info;
 
 #[help]
 #[individual_command_tip = "For help on a specific command pass it as argument."]
@@ -47,6 +48,6 @@ pub async fn before(ctx: &Context, _: &Message, command_name: &str) -> bool {
 pub async fn after(ctx: &Context, msg: &Message, _: &str, _: CommandResult) {
     match msg.delete(&ctx.http).await {
         Ok(_) => (),
-        Err(e) => println!("Cound not delete message: {}", e),
+        Err(e) => info!("Cound not delete message: {}", e),
     }
 }

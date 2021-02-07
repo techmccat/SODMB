@@ -1,11 +1,18 @@
-use super::utils::*;
+use crate::cache::{self, TrackCache, TrackEndEvent, BITRATE};
+use super::{TrackOwner, utils::*};
 use serde_json::Value;
 use serenity::{
     client::Context,
     framework::standard::{macros::command, Args, CommandResult},
     model::channel::Message,
 };
-use songbird::input::Metadata;
+use songbird::{
+    input::{cached::Compressed, dca, Metadata},
+    Bitrate, Event, TrackEvent,
+};
+use std::time::Duration;
+use tokio::{io::{AsyncReadExt}, fs::File};
+use tracing::{info, error};
 
 #[command]
 #[aliases("a")]
@@ -37,6 +44,7 @@ pub async fn add(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
     } {
         (m, Ok(i)) => (i, m.unwrap()),
         (_, Err(e)) => {
+            info!("Error creating input: {:?}", e);
             handle_message(
                 msg.channel_id
                     .say(&ctx.http, format!("Error: {:?}", e))
@@ -46,13 +54,7 @@ pub async fn add(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
         }
     };
 
-    if let Err(e) = enqueue(ctx, msg, input).await {
-        handle_message(
-            msg.channel_id
-                .say(&ctx.http, format!("Error: {:?}", e))
-                .await,
-        );
-    }
+    enqueue(ctx, msg, input).await;
     handle_message(query_msg.delete(&ctx.http).await);
 
     Ok(())
@@ -90,6 +92,7 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
     } {
         (m, Ok(i)) => (i, m.unwrap()),
         (_, Err(e)) => {
+            info!("Error creating input: {:?}", e);
             handle_message(
                 msg.channel_id
                     .say(&ctx.http, format!("Error: {:?}", e))
@@ -99,13 +102,7 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
         }
     };
 
-    if let Err(e) = enqueue(ctx, msg, input).await {
-        handle_message(
-            msg.channel_id
-                .say(&ctx.http, format!("Error: {:?}", e))
-                .await,
-        );
-    }
+    enqueue(ctx, msg, input).await;
     handle_message(query_msg.delete(&ctx.http).await);
 
     Ok(())
@@ -151,6 +148,7 @@ pub async fn icecast(ctx: &Context, msg: &Message, mut args: Args) -> CommandRes
     } {
         (m, Ok(i)) => (i, m.unwrap()),
         (_, Err(e)) => {
+            info!("Error creating input: {:?}", e);
             handle_message(
                 msg.channel_id
                     .say(&ctx.http, format!("Error: {:?}", e))
@@ -160,14 +158,155 @@ pub async fn icecast(ctx: &Context, msg: &Message, mut args: Args) -> CommandRes
         }
     };
 
-    if let Err(e) = enqueue(ctx, msg, input).await {
-        handle_message(
-            msg.channel_id
-                .say(&ctx.http, format!("Error: {:?}", e))
-                .await,
-        );
-    }
+    enqueue(ctx, msg, input).await;
     handle_message(query_msg.delete(&ctx.http).await);
 
     Ok(())
+}
+
+//#[instrument(skip(ctx))]
+async fn enqueue(
+    ctx: &Context,
+    msg: &Message,
+    input: songbird::input::Input,
+) {
+    let cache = {
+        let read = ctx.data.read().await;
+        read.get::<TrackCache>().unwrap().clone()
+    };
+    let guild = msg.guild(&ctx.cache).await.unwrap();
+    let guild_id = guild.id;
+    let channel_id = match guild
+        .voice_states
+        .get(&msg.author.id)
+        .and_then(|vs| vs.channel_id)
+    {
+        Some(id) => id,
+        None => {
+            handle_message(msg.reply(&ctx, "not in a voice channel").await);
+            return
+        }
+    };
+
+    let manager = songbird::get(ctx).await.unwrap().clone();
+
+    if manager.get(guild_id).is_none() {
+        let (_, join_result) = manager.join(guild_id, channel_id).await;
+        if let Err(e) = join_result {
+            info!("Couldn't join voice channel: {:?}", e);
+            handle_message(msg.channel_id
+                .say(&ctx, "Couldn't join voice channel: {:?}")
+                .await);
+                return
+        }
+    }
+    let meta = input.metadata.clone();
+    let mut comp = None;
+
+    if let Some(url) = meta.source_url {
+        let input = if let Some(p) = cache.lock().await.0.get(&url) {
+            info!("Cache hit for {}", url);
+
+            let file = format!("audio_cache/{}", p);
+            let mut input = dca(&file).await.unwrap();
+
+            // Metadata that doesn't fit in the standard dca1 stuff is in the extra
+            // field of the json metadata
+            // TODO: remove from cache and fetch again if fail
+            let extra_meta = {
+                let mut reader = handle_io(File::open(&file).await);
+                let mut header = [0u8; 4];
+
+                handle_io(reader.read_exact(&mut header).await);
+
+                if header != b"DCA1"[..] {
+                    error!("Invalid magic bytes");
+                    return
+                }
+
+                let size = handle_io(reader.read_i32_le().await);
+                if size < 2 {
+                    error!("Invalid metadata size");
+                    return
+                };
+
+                let mut json = Vec::with_capacity(size as usize);
+                let mut json_reader = reader.take(size as u64);
+
+                handle_io(json_reader.read_to_end(&mut json).await);
+                let value = serde_json::from_slice(&json).unwrap_or_default();
+                cache::extra_meta(&value)
+            };
+            {
+                input.metadata = Box::new(Metadata {
+                    date: extra_meta.date,
+                    duration: extra_meta.duration,
+                    thumbnail: extra_meta.thumbnail,
+                    ..*input.metadata
+                })
+            }
+            input
+        } else if let Some(d) = meta.duration {
+            // TODO: Add config entry to limit lenght
+            if d <= Duration::from_secs(1200) {
+                match Compressed::new(input, Bitrate::BitsPerSecond(BITRATE as i32)) {
+                    Ok(compressed) => {
+                        comp = Some(compressed.new_handle());
+                        // Load the whole thing into RAM.
+                        // Audio artifacts appear when not doing this and loading the whole thing
+                        // in ram is usually cheaper than keeping ytdl and ffmpeg open
+                        let _ = compressed.raw.spawn_loader();
+                        compressed.into()
+                    }
+                    Err(e) => {
+                        handle_message(
+                            msg.channel_id
+                                .say(&ctx.http, format!("Error: {:?}", e))
+                                .await,
+                        );
+                        return
+                    }
+                }
+            } else {
+                input
+            }
+        } else {
+            input
+        };
+
+        info!("Input: {:?}", input);
+
+        let manager = songbird::get(ctx).await.unwrap().clone();
+
+        if manager.get(guild_id).is_none() {
+            let (_, join_result) = manager.join(guild_id, channel_id).await;
+            if let Err(_) = join_result {
+                handle_message(
+                    msg.channel_id
+                        .say(&ctx, "Couldn't join voice channel")
+                        .await,
+                );
+            }
+        }
+
+        let locked = manager.get(guild_id).unwrap();
+        let mut call = locked.lock().await;
+
+        let (track, track_handle) = songbird::tracks::create_player(input);
+
+        let mut typemap = track_handle.typemap().write().await;
+        typemap.insert::<TrackOwner>(msg.author.id);
+
+        if let Some(c) = comp {
+            let _ = track_handle.add_event(
+                Event::Track(TrackEvent::End),
+                TrackEndEvent {
+                    cache: cache.clone(),
+                    compressed: c,
+                },
+            );
+        };
+
+        call.enqueue(track);
+    }
 }

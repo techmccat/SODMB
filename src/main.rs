@@ -4,17 +4,15 @@ use serenity::{
     async_trait,
     client::{bridge::gateway::ShardManager, Client, Context, EventHandler},
     framework::{standard::macros::group, StandardFramework},
-    model::{
-        gateway::{Activity, Ready},
-    },
+    model::gateway::{Activity, Ready},
     prelude::TypeMapKey,
 };
 use songbird::SerenityInit;
 use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
-use toml;
+use tracing::{info, warn};
 
-mod audiocache;
+mod cache;
 mod commands;
 mod icecast;
 
@@ -33,7 +31,9 @@ struct Handler {
 struct Misc;
 
 #[group]
-#[commands(add, raw, icecast, pause, play, skip, clear, queue, pop, leave, join, np)]
+#[commands(
+    add, raw, icecast, pause, play, skip, clear, queue, pop, leave, join, np
+)]
 struct Music;
 
 struct ShardManagerContainer;
@@ -54,7 +54,7 @@ impl TypeMapKey for CommandCounter {
     type Value = HashMap<String, u64>;
 }
 
-use audiocache::TrackCache;
+use cache::TrackCache;
 impl TypeMapKey for TrackCache {
     type Value = Arc<Mutex<TrackCache>>;
 }
@@ -62,14 +62,16 @@ impl TypeMapKey for TrackCache {
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        println!("{} connected", ready.user.name);
+        info!("{} connected", ready.user.name);
         let act = format!("{}help", self.prefix);
         ctx.set_activity(Activity::playing(&act)).await;
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>>{
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
     let config = read_config()?;
 
     let framework = StandardFramework::new()
@@ -79,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         .before(before)
         .after(after)
         .help(&HELP);
+
     let mut client = Client::builder(config.token)
         .event_handler(Handler {
             prefix: config.prefix,
@@ -96,12 +99,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     let shard_manager = client.shard_manager.clone();
 
-    // TODO: Handle SIGINT this way too
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.expect("Could not get signal");
-        println!("Shutting down shards");
+        warn!("Shutting down shards");
         shard_manager.lock().await.shutdown_all().await;
     });
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let shard_manager = client.shard_manager.clone();
+
+        tokio::spawn(async move {
+            let mut signal = signal(SignalKind::terminate()).unwrap();
+            signal.recv().await;
+            warn!("Shutting down shards");
+            shard_manager.lock().await.shutdown_all().await;
+        });
+    }
 
     client.start().await?;
     Ok(())
@@ -109,12 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
 fn read_config() -> Result<Config, Box<dyn std::error::Error>> {
     Ok(toml::from_str({
-        &fs::read_to_string(
-            env::current_exe()?
-                .parent()
-                .unwrap()
-                .join("config.toml"),
-        )
-        .unwrap_or(fs::read_to_string(env::current_dir()?.join("config.toml"))?)
+        &fs::read_to_string(env::current_exe()?.parent().unwrap().join("config.toml"))
+            .unwrap_or(fs::read_to_string(env::current_dir()?.join("config.toml"))?)
     })?)
 }

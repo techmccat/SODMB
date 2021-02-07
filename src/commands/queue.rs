@@ -1,4 +1,4 @@
-use super::{TrackOwner, utils::*};
+use super::{utils::*, TrackOwner};
 use futures::{prelude::stream, stream::StreamExt};
 use serenity::{
     client::Context,
@@ -116,6 +116,7 @@ pub async fn pop(ctx: &Context, msg: &Message) -> CommandResult {
         if let Some((i, removed)) = {
             let call = lock.lock().await;
             let vec = call.queue().current_queue();
+            // iterate on current queue, select only songs by user, take the last one
             stream::iter(vec.iter().enumerate())
                 .filter_map(|(i, e)| async move {
                     let read = e.typemap().read().await;
@@ -130,10 +131,12 @@ pub async fn pop(ctx: &Context, msg: &Message) -> CommandResult {
                 .await
                 .pop()
         } {
+            // Actually remove the track from the queue, stop it to prevent leaks
             lock.lock()
                 .await
                 .queue()
-                .modify_queue(|queue| queue.remove(i));
+                .modify_queue(|queue| queue.remove(i).and_then(|track| track.stop().ok()));
+
             let nick = msg
                 .author_nick(&ctx)
                 .await
@@ -143,6 +146,7 @@ pub async fn pop(ctx: &Context, msg: &Message) -> CommandResult {
             let title = meta.title.unwrap_or(url.clone());
             let desc = format!("`{}`: [{}]({})\nRequested by {}", i, title, url, nick);
             let colour = cached_colour(ctx, msg.guild(&ctx.cache).await).await;
+
             handle_message(
                 msg.channel_id
                     .send_message(&ctx, |m| {

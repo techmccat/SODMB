@@ -6,16 +6,18 @@ use songbird::{
     input::{cached::Compressed, Metadata},
     Event, EventContext, EventHandler,
 };
-use std::{collections::HashMap, fs, io::Read, path::Path, sync::Arc, time::Duration};
+use std::{collections::HashMap, fs, path::Path, sync::Arc, time::Duration};
 use tokio::{fs::File, io::AsyncWriteExt, sync::Mutex};
+use tracing::info;
 
 pub const BITRATE: u64 = 128_000;
 
 mod metadata;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct TrackCache(pub HashMap<String, String>);
 
+#[derive(Debug)]
 pub struct TrackEndEvent {
     pub cache: Arc<Mutex<TrackCache>>,
     pub compressed: Compressed,
@@ -37,17 +39,21 @@ impl Drop for TrackCache {
         if !Path::new("audio_cache").exists() {
             handle_io(fs::create_dir("audio_cache"));
         };
-        handle_io(fs::write(cold, &serde_json::to_string(&self.0).unwrap().into_bytes()));
+        handle_io(fs::write(
+            cold,
+            &serde_json::to_string(&self.0).unwrap().into_bytes(),
+        ));
+        info!("Wrote JSON at {}", cold)
     }
 }
 
 #[async_trait]
 impl EventHandler for TrackEndEvent {
+    //#[instrument(skip(ctx))]
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         if let EventContext::Track(track_list) = ctx {
             let (_, handle) = track_list.last().unwrap();
             let meta = self.compressed.metadata.clone();
-            // if already cached, do nothing
             if self
                 .cache
                 .lock()
@@ -56,13 +62,13 @@ impl EventHandler for TrackEndEvent {
                 .get(&handle.metadata().source_url.clone().unwrap())
                 .is_some()
             {
+                info!("Already cached");
                 return None;
             }
             // only cache if shorter than 20min
             if let Some(d) = meta.duration {
                 if d <= Duration::from_secs(1200) {
-                    let time = d.as_secs();
-                    let len = (time + 1) * BITRATE / 8;
+                    info!("Starting cache write");
                     // saves file as audio_cache/host/query
                     let sauce = meta.source_url.clone().unwrap();
                     let (query, host) = {
@@ -75,37 +81,31 @@ impl EventHandler for TrackEndEvent {
                     // songbird doesn't output dca1, so I'll do it myself
                     let dcameta = metadata::DcaMetadata::from(meta.clone());
 
-                    let mut comp_send = self.compressed.raw.new_handle();
-                    let dca = tokio::task::spawn_blocking(move || {
-                        // println!("Preallocating {} bytes", len);
-                        let mut buf = Vec::with_capacity(len as usize);
-                        // println!("Read {} bytes",
-                        handle_io(comp_send.read_to_end(&mut buf));
-                        buf
-                    })
-                    .await
-                    .unwrap();
+                    let path = format!("audio_cache/{}", host);
+                    if !Path::new(&path).exists() {
+                        handle_io(fs::create_dir_all(&path));
+                    };
+                    let path = format!("{}/{}", path, query);
+                    let mut file = handle_io(File::create(&path).await);
 
-                    {
-                        let path = format!("audio_cache/{}", host);
-                        if !Path::new(&path).exists() {
-                            handle_io(fs::create_dir_all(&path));
-                        };
-                        let path = format!("{}/{}", path, query);
-                        let mut file = handle_io(File::create(&path).await);
-                        // TODO: tracing
-                        // println!("Writing to {}", path);
-                        // println!(
-                        //    "Header: {} bytes",
-                        handle_io(file.write(&dcameta.header()).await);
-                        //);
-                        handle_io(file.write_all(&dca).await);
-                    }
-                    let mut lock = self.cache.lock().await;
-                    lock.0.insert(
-                        sauce,
-                        format!("{}/{}", host, query),
+                    let mut size = handle_io(file.write(&dcameta.header()).await) as u64;
+
+                    let mut send_file = file.into_std().await;
+                    let mut comp_send = self.compressed.raw.new_handle();
+
+                    // AsyncRead is a clusterfuck i dont' really want to deal with it ATM.
+                    // Take a look at the traits for TxCatcher and feel my pain
+                    size += handle_io(
+                        tokio::task::spawn_blocking(move || {
+                            std::io::copy(&mut comp_send, &mut send_file)
+                        })
+                        .await
+                        .unwrap(),
                     );
+                    info!("Wrote {}KB", size / 1024);
+
+                    let mut lock = self.cache.lock().await;
+                    lock.0.insert(sauce, format!("{}/{}", host, query));
                 }
             }
         }

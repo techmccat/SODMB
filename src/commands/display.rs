@@ -1,8 +1,9 @@
 use super::{utils::*, CommandCounter, ShardManagerContainer, TrackOwner};
 use serenity::{
+    builder::CreateMessage,
     client::{bridge::gateway::ShardId, Context},
     framework::standard::{macros::command, CommandResult},
-    model::channel::Message,
+    model::{channel::Message, id},
 };
 use std::time::Instant;
 
@@ -11,27 +12,27 @@ use std::time::Instant;
 #[description = "Data on the bot"]
 // TODO: Display correctly cache size
 pub async fn stats(ctx: &Context, msg: &Message) -> CommandResult {
+    // Measure time elapsed while seding a message (REST latency)
     let now = Instant::now();
     let mut sand = msg.channel_id.say(&ctx, "Measuring REST latency").await?;
     let http_latency = format!("{}ms", now.elapsed().as_millis());
 
     let data = ctx.data.read().await;
+
+    // Get WS latency from the ShardManagerContainer
     let ws_latency = {
         let mutex = data.get::<ShardManagerContainer>().unwrap().clone();
         let manager = mutex.lock().await;
         let runners = manager.runners.lock().await;
         let runner = runners.get(&ShardId(ctx.shard_id));
-        if let Some(r) = runner {
-            if let Some(l) = r.latency {
-                format!("{}ms", l.as_millis())
-            } else {
-                "?ms".to_owned()
-            }
-        } else {
-            "?ms".to_owned()
-        }
+        // Might not have a value, just use ?
+        runner
+            .map(|r| r.latency.map(|l| format!("{}ms", l.as_millis())))
+            .flatten()
+            .unwrap_or("?ms".to_owned())
     };
 
+    // TODO: Better way to do this?
     let top_commands = {
         let map = data.get::<CommandCounter>().unwrap().clone();
         let mut count: Vec<(&String, &u64)> = map.iter().collect();
@@ -182,4 +183,113 @@ async fn np(ctx: &Context, msg: &Message) -> CommandResult {
     }
 
     Ok(())
+}
+
+async fn format_metadata<'a>(
+    ctx: &Context,
+    gid: id::GuildId,
+    meta: songbird::input::Metadata,
+    author_id: id::UserId,
+    state: Box<songbird::tracks::TrackState>,
+) -> CreateMessage<'a> {
+    let title = format!("Now playing: {}", meta.title.unwrap_or("".to_owned()));
+    let thumb = meta.thumbnail;
+    let owner = if let Ok(o) = { author_id.to_user(&ctx).await } {
+        o.nick_in(&ctx, gid).await.unwrap_or(o.name)
+    } else {
+        "?".to_owned()
+    };
+
+    let foot = format!("Requested by: {}", owner);
+    let mut fields = None;
+
+    {
+        let mut out = Vec::new();
+        if let Some(a) = meta.artist {
+            out.push(("Artist/Channel", a, true));
+        }
+        if let Some(a) = meta.date {
+            let mut d = a;
+            d.insert(6, '/');
+            d.insert(4, '/');
+            out.push(("Date", d, true));
+        }
+        if out.len() != 0 {
+            fields = Some(out)
+        }
+    }
+
+    let colour = cached_colour(ctx, ctx.cache.guild(gid).await).await;
+
+    let progress_bar = {
+        if let Some(d) = meta.duration {
+            fn as_mins(s: u64) -> String {
+                format!("{}:{}", s / 60, s % 60)
+            }
+            let p = state.position;
+            let d_int = d.as_secs();
+            let p_int = p.as_secs();
+            let ratio = (p_int as f32 / d_int as f32 * 30.0).round() as u8;
+            let mut bar = String::with_capacity(30);
+            for _ in 1..ratio {
+                bar.push('=')
+            }
+            bar.push('>');
+            for _ in 0..30 - ratio {
+                bar.push('-')
+            }
+            let mut out = String::new();
+            out.push_str(&format!(
+                "`{}`  `{}`  `{}`",
+                as_mins(p_int),
+                bar,
+                as_mins(d_int)
+            ));
+            Some(out)
+        } else {
+            None
+        }
+    };
+
+    let desc = {
+        use songbird::tracks::{LoopState, PlayMode};
+        let mut out = String::new();
+        out.push_str(&meta.source_url.unwrap_or("".to_owned()));
+        if let Some(s) = progress_bar {
+            out.push('\n');
+            out.push_str(&s);
+            out.push('\n');
+        } else {
+            out.push('\n');
+        }
+        out.push_str("Status: ");
+        out.push_str(match state.playing {
+            PlayMode::Play => "Playing",
+            PlayMode::Pause => "Paused",
+            PlayMode::Stop => "Stopped",
+            PlayMode::End => "Ended",
+            _ => "?",
+        });
+        if let LoopState::Finite(l) = state.loops {
+            if l != 0 {
+                out.push_str(&format!("; {} loops left", l))
+            }
+        }
+        out
+    };
+
+    let mut message = CreateMessage::default();
+    message.embed(|e| {
+        if let Some(f) = fields {
+            e.fields(f);
+        }
+        if let Some(t) = thumb {
+            e.thumbnail(t);
+        }
+        e.title(title)
+            .description(desc)
+            .footer(|f| f.text(foot))
+            .colour(colour)
+    });
+    message
 }
