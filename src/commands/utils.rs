@@ -7,19 +7,20 @@ use serenity::{
     utils::Colour,
     Result as SerenityResult,
 };
-use tracing::{error, info};
+use tracing::{warn, info};
 
 pub fn handle_message<T>(res: SerenityResult<T>) {
     match res {
         Ok(_) => (),
-        Err(e) => info!("Could not send/delete message: {}", e),
+        Err(e) => warn!("Could not send/delete message: {}", e),
     }
 }
 
+#[cfg(feature = "cache")]
 pub fn handle_io<T>(res: std::io::Result<T>) -> T {
     match res {
         Ok(t) => t,
-        Err(e) => { error!("I/O error: {}", e); panic!() },
+        Err(e) => { tracing::error!("I/O error: {}", e); panic!() },
     }
 }
 

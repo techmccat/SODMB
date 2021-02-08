@@ -10,9 +10,11 @@ use serenity::{
 use songbird::SerenityInit;
 use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::warn;
 
+#[cfg(feature = "cache")]
 mod cache;
+
 mod commands;
 mod icecast;
 
@@ -54,15 +56,17 @@ impl TypeMapKey for CommandCounter {
     type Value = HashMap<String, u64>;
 }
 
+#[cfg(feature = "cache")]
 use cache::TrackCache;
+#[cfg(feature = "cache")]
 impl TypeMapKey for TrackCache {
-    type Value = Arc<Mutex<TrackCache>>;
+    type Value = TrackCache;
 }
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        info!("{} connected", ready.user.name);
+        warn!("{} connected", ready.user.name);
         let act = format!("{}help", self.prefix);
         ctx.set_activity(Activity::playing(&act)).await;
     }
@@ -90,11 +94,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_songbird()
         .await
         .unwrap();
+
     {
         let mut data = client.data.write().await;
         data.insert::<CommandCounter>(HashMap::default());
-        data.insert::<TrackCache>(Arc::new(Mutex::new(TrackCache::new())));
         data.insert::<ShardManagerContainer>(Arc::clone(&client.shard_manager));
+
+        #[cfg(feature = "cache")]
+        match TrackCache::new("sqlite://audio_cache/cache.db").await {
+            Ok(tc) => data.insert::<TrackCache>(tc),
+            Err(e) => tracing::error!(
+                "Database connection error: {}
+Cache will be disabled",
+                e
+            ),
+        }
     }
 
     let shard_manager = client.shard_manager.clone();

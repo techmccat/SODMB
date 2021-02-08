@@ -4,6 +4,17 @@ version = "0.1.0"
 authors = ["techmccat <alessioa02004@gmail.com>"]
 edition = "2018"
 
+[features]
+default = ["sqlite"]
+allbackends = ["cache", "mssql", "mysql", "postgres", "sqlite"]
+nocache = []
+
+cache = ["sqlx"]
+mssql = ["cache", "sqlx/mssql"]
+mysql = ["cache", "sqlx/mysql"]
+postgres = ["cache", "sqlx/postgres"]
+sqlite = ["cache", "sqlx/sqlite"]
+
 [dependencies]
 futures = "0.3"
 http = "0.2"
@@ -11,7 +22,6 @@ reqwest = { version = "0.11", default_features = false, features = ["json", "rus
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 streamcatcher = { version = "0.1", features = ["tokio-compat"] }
-sqlx = { version = "0.4", features = ["runtime-tokio-rustls"] }
 tokio-util = { version = "0.6", features= ["compat"] }
 toml = "0.5"
 tracing = "0.1"
@@ -25,6 +35,11 @@ features = ["client", "gateway", "rustls_backend", "model", "cache", "framework"
 [dependencies.songbird]
 version = "0.1"
 features = ["gateway", "serenity-rustls", "builtin-queue", "driver"]
+
+[dependencies.sqlx]
+optional = true
+version = "0.4"
+features = ["any", "sqlite", "macros", "runtime-tokio-rustls"]
 
 [dependencies.tokio]
 version = "1.0"

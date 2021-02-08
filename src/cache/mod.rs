@@ -6,65 +6,83 @@ use songbird::{
     input::{cached::Compressed, Metadata},
     Event, EventContext, EventHandler,
 };
-use std::{collections::HashMap, fs, path::Path, sync::Arc, time::Duration};
+use sqlx::{any::AnyConnection, Connection, Executor, Row};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 use tokio::{fs::File, io::AsyncWriteExt, sync::Mutex};
-use tracing::info;
+use tracing::{info, warn};
 
 pub const BITRATE: u64 = 128_000;
 
 mod metadata;
 
-#[derive(Debug, Default)]
-pub struct TrackCache(pub HashMap<String, String>);
+type DbResult<T> = Result<T, sqlx::Error>;
+
+#[derive(Debug, Clone)]
+pub struct TrackCache {
+    pub connection: Arc<Mutex<AnyConnection>>,
+}
+
+#[derive(Debug)]
+struct CacheRow {
+    uri: String,
+    path: String,
+}
 
 #[derive(Debug)]
 pub struct TrackEndEvent {
-    pub cache: Arc<Mutex<TrackCache>>,
+    pub cache: TrackCache,
     pub compressed: Compressed,
 }
 
 impl TrackCache {
-    pub fn new() -> Self {
-        let buf = fs::read_to_string("audio_cache/cold.json").unwrap_or_default();
-        Self {
-            0: serde_json::from_str(&buf).unwrap_or_default(),
-        }
+    pub async fn new(uri: &str) -> DbResult<TrackCache> {
+        let mut conn = AnyConnection::connect(uri).await?;
+        conn.execute("BEGIN").await?;
+        Ok(TrackCache {
+            connection: Arc::new(Mutex::new(conn)),
+        })
     }
-}
 
-// TODO: Flush this once in a while
-impl Drop for TrackCache {
-    fn drop(&mut self) {
-        let cold = "audio_cache/cold.json";
-        if !Path::new("audio_cache").exists() {
-            handle_io(fs::create_dir("audio_cache"));
-        };
-        handle_io(fs::write(
-            cold,
-            &serde_json::to_string(&self.0).unwrap().into_bytes(),
-        ));
-        info!("Wrote JSON at {}", cold)
+    pub async fn get(&self, uri: &str) -> DbResult<Option<String>> {
+        let mut conn = self.connection.lock().await;
+
+        let row = sqlx::query(&format!(
+            "
+select Path from Cache
+where Uri=\"{}\"
+            ",
+            uri
+        ))
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        Ok(row.map(|r| r.get("Path")).flatten())
+    }
+
+    async fn insert(&self, row: CacheRow) -> DbResult<Option<i64>> {
+        let mut conn = self.connection.lock().await;
+
+        let res = sqlx::query(&format!(
+            "
+insert into Cache values('{}', '{}')
+            ",
+            row.uri, row.path
+        ))
+        .execute(&mut *conn)
+        .await?;
+
+        // Use with Any*
+        Ok(res.last_insert_id())
+        //Ok(Some(res.last_insert_rowid()))
     }
 }
 
 #[async_trait]
 impl EventHandler for TrackEndEvent {
-    //#[instrument(skip(ctx))]
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
-        if let EventContext::Track(track_list) = ctx {
-            let (_, handle) = track_list.last().unwrap();
+        if let EventContext::Track(_) = ctx {
             let meta = self.compressed.metadata.clone();
-            if self
-                .cache
-                .lock()
-                .await
-                .0
-                .get(&handle.metadata().source_url.clone().unwrap())
-                .is_some()
-            {
-                info!("Already cached");
-                return None;
-            }
+
             // only cache if shorter than 20min
             if let Some(d) = meta.duration {
                 if d <= Duration::from_secs(1200) {
@@ -93,7 +111,7 @@ impl EventHandler for TrackEndEvent {
                     let mut send_file = file.into_std().await;
                     let mut comp_send = self.compressed.raw.new_handle();
 
-                    // AsyncRead is a clusterfuck i dont' really want to deal with it ATM.
+                    // AsyncRead is a mess I dont' really want to deal with ATM.
                     // Take a look at the traits for TxCatcher and feel my pain
                     size += handle_io(
                         tokio::task::spawn_blocking(move || {
@@ -102,10 +120,18 @@ impl EventHandler for TrackEndEvent {
                         .await
                         .unwrap(),
                     );
-                    info!("Wrote {}KB", size / 1024);
+                    info!("Wrote {}KiB", size / 1024);
 
-                    let mut lock = self.cache.lock().await;
-                    lock.0.insert(sauce, format!("{}/{}", host, query));
+                    if let Err(e) = self
+                        .cache
+                        .insert(CacheRow {
+                            uri: sauce,
+                            path: format!("{}/{}", host, query),
+                        })
+                        .await
+                    {
+                        warn!("Error adding entry to cache: {}", e)
+                    }
                 }
             }
         }

@@ -12,5 +12,5 @@ Put token and prefix in a the config.toml file, build it and run it.
 
 ## TODO
 - Audio cache
-    - Use a proper DB as cold storage, not JSON
+    - To fix: SQLite doesn't apply changes to the database on shutdown
 - Icecast song metadata (a bitch to parse, can't everyone just use lowercase?)
